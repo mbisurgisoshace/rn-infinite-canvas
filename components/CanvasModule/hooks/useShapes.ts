@@ -1,0 +1,225 @@
+// CanvasModule/hooks/useShapes.native.ts
+import { useCallback, useRef, useState } from "react";
+
+export type BaseShape = {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
+  text?: string;
+};
+
+export type RectShape = BaseShape & { kind: "rect" };
+export type EllipseShape = BaseShape & { kind: "ellipse" };
+export type TextShape = BaseShape & {
+  kind: "text";
+  fontSize?: number;
+  color?: string;
+};
+export type Shape = RectShape | EllipseShape | TextShape;
+
+type Corner = "nw" | "ne" | "se" | "sw";
+
+export function useShapes() {
+  const [shapes, setShapes] = useState<Shape[]>([
+    {
+      id: "r1",
+      kind: "rect",
+      x: -120,
+      y: -80,
+      w: 160,
+      h: 100,
+      fill: "#EEF2FF",
+      stroke: "#6376F1",
+      strokeWidth: 2,
+      text: "Rect",
+    },
+    {
+      id: "e1",
+      kind: "ellipse",
+      x: 120,
+      y: 40,
+      w: 140,
+      h: 90,
+      fill: "#FFF7ED",
+      stroke: "#F59E0B",
+      strokeWidth: 2,
+      text: "Ellipse",
+    },
+    {
+      id: "t1",
+      kind: "text",
+      x: -40,
+      y: 120,
+      w: 220,
+      h: 40,
+      text: "Hello RN",
+      fontSize: 18,
+      color: "#111827",
+    },
+  ]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+
+  // --- Resize session state (in-memory, not persisted) ---
+  const resizingRef = useRef<{
+    id: string | null;
+    corner: Corner | null;
+    start: { x: number; y: number; w: number; h: number } | null;
+  }>({ id: null, corner: null, start: null });
+
+  const MIN_W = 20;
+  const MIN_H = 20;
+
+  const select = useCallback((id: string | null) => setSelectedId(id), []);
+
+  // --- Drag move ---
+  const beginDrag = useCallback((id: string) => setDraggingId(id), []);
+  const dragBy = useCallback(
+    (dx: number, dy: number) => {
+      if (!draggingId) return;
+      setShapes((prev) =>
+        prev.map((s) =>
+          s.id === draggingId ? { ...s, x: s.x + dx, y: s.y + dy } : s
+        )
+      );
+    },
+    [draggingId]
+  );
+  const endDrag = useCallback(() => setDraggingId(null), []);
+
+  // --- Add shapes ---
+  const addRect = useCallback((partial: Partial<RectShape> = {}) => {
+    const id = partial.id ?? `rect_${Math.random().toString(36).slice(2, 9)}`;
+    const s: RectShape = {
+      id,
+      kind: "rect",
+      x: partial.x ?? 0,
+      y: partial.y ?? 0,
+      w: partial.w ?? 160,
+      h: partial.h ?? 100,
+      fill: partial.fill ?? "#ffffff",
+      stroke: partial.stroke ?? "#111111",
+      strokeWidth: partial.strokeWidth ?? 2,
+      text: partial.text ?? "Rect",
+    };
+    setShapes((prev) => [...prev, s]);
+    return id;
+  }, []);
+
+  const addEllipse = useCallback((partial: Partial<EllipseShape> = {}) => {
+    const id =
+      partial.id ?? `ellipse_${Math.random().toString(36).slice(2, 9)}`;
+    const s: EllipseShape = {
+      id,
+      kind: "ellipse",
+      x: partial.x ?? 0,
+      y: partial.y ?? 0,
+      w: partial.w ?? 140,
+      h: partial.h ?? 90,
+      fill: partial.fill ?? "#ffffff",
+      stroke: partial.stroke ?? "#111111",
+      strokeWidth: partial.strokeWidth ?? 2,
+      text: partial.text ?? "Ellipse",
+    };
+    setShapes((prev) => [...prev, s]);
+    return id;
+  }, []);
+
+  const addText = useCallback((partial: Partial<TextShape> = {}) => {
+    const id = partial.id ?? `text_${Math.random().toString(36).slice(2, 9)}`;
+    const s: TextShape = {
+      id,
+      kind: "text",
+      x: partial.x ?? 0,
+      y: partial.y ?? 0,
+      w: partial.w ?? 200,
+      h: partial.h ?? 40,
+      text: partial.text ?? "New text",
+      fontSize: partial.fontSize ?? 18,
+      color: partial.color ?? "#111827",
+    };
+    setShapes((prev) => [...prev, s]);
+    return id;
+  }, []);
+
+  const setShapeText = useCallback((id: string, text: string) => {
+    setShapes((prev) => prev.map((s) => (s.id === id ? { ...s, text } : s)));
+  }, []);
+
+  // --- Resize API ---
+  const beginResize = useCallback(
+    (id: string, corner: Corner) => {
+      const s = shapes.find((sh) => sh.id === id);
+      if (!s) return;
+      resizingRef.current = {
+        id,
+        corner,
+        start: { x: s.x, y: s.y, w: s.w, h: s.h },
+      };
+    },
+    [shapes]
+  );
+
+  const resizeBy = useCallback((dx: number, dy: number) => {
+    const sess = resizingRef.current;
+    if (!sess.id || !sess.corner || !sess.start) return;
+
+    const { start, corner, id } = sess;
+    let { x, y, w, h } = start;
+
+    // Corner math in WORLD units
+    if (corner === "se") {
+      w = Math.max(MIN_W, w + dx);
+      h = Math.max(MIN_H, h + dy);
+    }
+    if (corner === "sw") {
+      x = x + dx;
+      w = Math.max(MIN_W, w - dx);
+      h = Math.max(MIN_H, h + dy);
+    }
+    if (corner === "ne") {
+      y = y + dy;
+      h = Math.max(MIN_H, h - dy);
+      w = Math.max(MIN_W, w + dx);
+    }
+    if (corner === "nw") {
+      x = x + dx;
+      y = y + dy;
+      w = Math.max(MIN_W, w - dx);
+      h = Math.max(MIN_H, h - dy);
+    }
+
+    setShapes((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, x, y, w, h } : s))
+    );
+  }, []);
+
+  const endResize = useCallback(() => {
+    resizingRef.current = { id: null, corner: null, start: null };
+  }, []);
+
+  return {
+    shapes,
+    selectedId,
+    select,
+    // drag
+    beginDrag,
+    dragBy,
+    endDrag,
+    // add
+    addRect,
+    addEllipse,
+    addText,
+    // text
+    setShapeText,
+    // resize
+    beginResize,
+    resizeBy,
+    endResize,
+  };
+}
