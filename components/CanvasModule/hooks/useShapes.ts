@@ -6,7 +6,7 @@ export type BaseShape = {
   x: number;
   y: number;
   w: number;
-  h: number;
+  h: number; // WORLD coords
   fill?: string;
   stroke?: string;
   strokeWidth?: number;
@@ -20,9 +20,9 @@ export type TextShape = BaseShape & {
   fontSize?: number;
   color?: string;
 };
-export type Shape = RectShape | EllipseShape | TextShape;
 
-type Corner = "nw" | "ne" | "se" | "sw";
+export type Shape = RectShape | EllipseShape | TextShape;
+export type Corner = "nw" | "ne" | "se" | "sw";
 
 export function useShapes() {
   const [shapes, setShapes] = useState<Shape[]>([
@@ -65,7 +65,7 @@ export function useShapes() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
-  // --- Resize session state (in-memory, not persisted) ---
+  // --- Resize session state (ephemeral) ---
   const resizingRef = useRef<{
     id: string | null;
     corner: Corner | null;
@@ -75,6 +75,7 @@ export function useShapes() {
   const MIN_W = 20;
   const MIN_H = 20;
 
+  // --- Selection ---
   const select = useCallback((id: string | null) => setSelectedId(id), []);
 
   // --- Drag move ---
@@ -172,7 +173,6 @@ export function useShapes() {
     const { start, corner, id } = sess;
     let { x, y, w, h } = start;
 
-    // Corner math in WORLD units
     if (corner === "se") {
       w = Math.max(MIN_W, w + dx);
       h = Math.max(MIN_H, h + dy);
@@ -207,17 +207,13 @@ export function useShapes() {
     shapes,
     selectedId,
     select,
-    // drag
     beginDrag,
     dragBy,
     endDrag,
-    // add
     addRect,
     addEllipse,
     addText,
-    // text
     setShapeText,
-    // resize
     beginResize,
     resizeBy,
     endResize,
