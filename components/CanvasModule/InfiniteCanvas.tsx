@@ -59,6 +59,7 @@ export default function InfiniteCanvas({
     beginResize,
     resizeBy,
     endResize,
+    isResizing,
   } = useShapes();
 
   // Inline text editing
@@ -71,7 +72,7 @@ export default function InfiniteCanvas({
   const canvasPinchRef = useRef<PinchGestureHandler>(null);
   const bgTapRef = useRef<TapGestureHandler>(null);
 
-  // Shape handler refs so background tap can wait for them
+  // Shape handler refs
   const shapePanRefs = useRef<Map<string, React.RefObject<PanGestureHandler>>>(
     new Map()
   );
@@ -82,7 +83,20 @@ export default function InfiniteCanvas({
     Map<string, React.RefObject<TapGestureHandler>>
   >(new Map());
 
-  // Resize handle pan refs (so they can win gesture races)
+  // If the selected shape changes while resizing, end the resize session.
+  useEffect(() => {
+    endResize(); // harmless if not resizing
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  // Safety: on unmount, end any active resize.
+  useEffect(() => {
+    return () => {
+      endResize();
+    };
+  }, [endResize]);
+
+  // Resize handle pan refs
   const handlePanRefs = useRef<Map<string, React.RefObject<PanGestureHandler>>>(
     new Map()
   );
@@ -129,7 +143,6 @@ export default function InfiniteCanvas({
     () => Array.from(handlePanRefs.current.values()),
     [selectedId, shapes.length]
   );
-
   const allInteractiveRefs = useMemo(
     () => [
       ...Array.from(shapeTapRefs.current.values()),
@@ -150,7 +163,6 @@ export default function InfiniteCanvas({
     },
     [cam.tx, cam.ty]
   );
-
   const onCanvasPanEvent = useCallback((e: any) => {
     const { translationX, translationY } = e.nativeEvent ?? {};
     if (!Number.isFinite(translationX) || !Number.isFinite(translationY))
@@ -166,14 +178,12 @@ export default function InfiniteCanvas({
   const pinchStart = useRef({ scale: 1 });
   const onCanvasPinchState = useCallback(
     (e: any) => {
-      const st = e.nativeEvent.state;
-      if (st === State.ACTIVE) {
+      if (e.nativeEvent.state === State.ACTIVE) {
         pinchStart.current = { scale: cam.scale };
       }
     },
     [cam.scale]
   );
-
   const onCanvasPinchEvent = useCallback((e: any) => {
     const { scale } = e.nativeEvent ?? {};
     if (!Number.isFinite(scale)) return;
@@ -186,11 +196,12 @@ export default function InfiniteCanvas({
   const onBackgroundTap = useCallback(
     (e: any) => {
       if (e.nativeEvent.state === State.END) {
+        endResize();
         select(null);
         setEditingId(null);
       }
     },
-    [select]
+    [select, endResize]
   );
 
   const onLayout = useCallback((e: LayoutChangeEvent) => {
@@ -198,19 +209,16 @@ export default function InfiniteCanvas({
     if (width && height) setSize({ w: width, h: height });
   }, []);
 
-  // Grid as Views (screen space)
+  // Grid (screen space)
   const gridViews = useMemo(() => {
     const nodes: JSX.Element[] = [];
     if (size.w <= 0 || size.h <= 0 || gridSize <= 0) return nodes;
-
     const step = gridSize * cam.scale;
     if (!(step > 0.001) || !isFinite(step)) return nodes;
-
     const startX = ((-cam.tx % step) + step) % step;
     const startY = ((-cam.ty % step) + step) % step;
     const countX = Math.ceil((size.w - startX) / step) + 1;
     const countY = Math.ceil((size.h - startY) / step) + 1;
-
     for (let i = -1; i <= countX; i++) {
       const x = startX + i * step;
       const idx = Math.round((x - cam.tx) / step);
@@ -272,7 +280,6 @@ export default function InfiniteCanvas({
     });
     select(id);
   }, [addRect, select]);
-
   const handleAddEllipse = useCallback(() => {
     const id = addEllipse({
       x: 0,
@@ -284,7 +291,6 @@ export default function InfiniteCanvas({
     });
     select(id);
   }, [addEllipse, select]);
-
   const handleAddText = useCallback(() => {
     const id = addText({
       x: 0,
@@ -298,7 +304,7 @@ export default function InfiniteCanvas({
     select(id);
   }, [addText, select]);
 
-  // Helpers: screen frame of a shape
+  // Helpers
   const getScreenFrame = useCallback(
     (id: string) => {
       const s = shapes.find((sh) => sh.id === id);
@@ -342,23 +348,24 @@ export default function InfiniteCanvas({
           onHandlerStateChange={onCanvasPanState}
           minPointers={1}
           maxPointers={2}
-          waitFor={handleWaitFor} // canvas pan waits for handles
+          waitFor={handleWaitFor}
+          enabled={!isResizing} // disable canvas pan while resizing
         >
           <TapGestureHandler
             ref={bgTapRef}
             onHandlerStateChange={onBackgroundTap}
             maxDist={TAP_SLOP}
             simultaneousHandlers={[canvasPanRef, canvasPinchRef]}
-            waitFor={allInteractiveRefs} // bg tap waits for shapes + handles
+            waitFor={allInteractiveRefs}
           >
             <View
               style={[styles.flex, { backgroundColor }]}
               onLayout={onLayout}
             >
-              {/* GRID (screen space) */}
+              {/* GRID */}
               {/* <View style={StyleSheet.absoluteFill}>{gridViews}</View> */}
 
-              {/* SHAPES (screen space) */}
+              {/* SHAPES */}
               {shapes.map((s) => {
                 const sx = s.x * cam.scale + cam.tx;
                 const sy = s.y * cam.scale + cam.ty;
@@ -395,7 +402,6 @@ export default function InfiniteCanvas({
                     </View>
                   );
                 }
-
                 if (s.kind === "ellipse") {
                   return (
                     <View
@@ -425,7 +431,6 @@ export default function InfiniteCanvas({
                     </View>
                   );
                 }
-
                 if (s.kind === "text") {
                   const fs = (s.fontSize ?? 18) * cam.scale;
                   return (
@@ -448,11 +453,10 @@ export default function InfiniteCanvas({
                     </View>
                   );
                 }
-
                 return null;
               })}
 
-              {/* SELECTION + HANDLES (screen space) */}
+              {/* SELECTION + HANDLES */}
               {shapes.map((s) => {
                 if (s.id !== selectedId) return null;
                 const sx = s.x * cam.scale + cam.tx;
@@ -474,7 +478,6 @@ export default function InfiniteCanvas({
                         borderWidth: 2,
                       }}
                     />
-                    {/* Corner handles */}
                     <ResizeHandle
                       cx={sx}
                       cy={sy}
@@ -527,7 +530,7 @@ export default function InfiniteCanvas({
                 );
               })}
 
-              {/* Interaction overlays (screen space) */}
+              {/* Interaction overlays (tap/select + drag) */}
               {shapes.map((s) => {
                 const sx = s.x * cam.scale + cam.tx;
                 const sy = s.y * cam.scale + cam.ty;
@@ -551,18 +554,31 @@ export default function InfiniteCanvas({
                       select(s.id);
                       beginEditing(s.id);
                     }}
-                    registerShapePanRef={registerShapePanRef}
-                    unregisterShapePanRef={unregisterShapePanRef}
-                    registerShapeTapRef={registerShapeTapRef}
-                    unregisterShapeTapRef={unregisterShapeTapRef}
-                    registerShapeDoubleTapRef={registerShapeDoubleTapRef}
-                    unregisterShapeDoubleTapRef={unregisterShapeDoubleTapRef}
-                    handleWaitFor={handleWaitFor} // <-- pass down
+                    registerShapePanRef={(id, ref) =>
+                      shapePanRefs.current.set(id, ref)
+                    }
+                    unregisterShapePanRef={(id) =>
+                      shapePanRefs.current.delete(id)
+                    }
+                    registerShapeTapRef={(id, ref) =>
+                      shapeTapRefs.current.set(id, ref)
+                    }
+                    unregisterShapeTapRef={(id) =>
+                      shapeTapRefs.current.delete(id)
+                    }
+                    registerShapeDoubleTapRef={(id, ref) =>
+                      shapeDoubleTapRefs.current.set(id, ref)
+                    }
+                    unregisterShapeDoubleTapRef={(id) =>
+                      shapeDoubleTapRefs.current.delete(id)
+                    }
+                    handleWaitFor={handleWaitFor}
+                    isResizing={isResizing}
                   />
                 );
               })}
 
-              {/* TEXT EDITOR overlay (screen space) */}
+              {/* TEXT EDITOR overlay */}
               {editingId &&
                 (() => {
                   const fr = getScreenFrame(editingId);
@@ -598,7 +614,7 @@ export default function InfiniteCanvas({
           </TapGestureHandler>
         </PanGestureHandler>
 
-        {/* Floating Toolbar bottom-center */}
+        {/* Toolbar */}
         <View pointerEvents="box-none" style={styles.toolbarWrap}>
           <View style={styles.toolbar}>
             <ToolbarButton label="Rect" onPress={handleAddRect} />
@@ -628,7 +644,7 @@ function ToolbarButton({
   );
 }
 
-/** Corner resize handle (screen space). */
+/** Corner resize handle with absolute finger deltas. */
 function ResizeHandle({
   cx,
   cy,
@@ -656,7 +672,7 @@ function ResizeHandle({
   unregisterHandleRef: (id: string) => void;
 }) {
   const panRef = useRef<PanGestureHandler>(null);
-  const last = useRef({ x: 0, y: 0 });
+  const lastAbs = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     const key = `${shapeId}:${corner}`;
@@ -666,12 +682,17 @@ function ResizeHandle({
 
   const onState = useCallback(
     (e: any) => {
-      const st = e.nativeEvent.state;
-      if (st === State.BEGAN) {
-        last.current = { x: 0, y: 0 };
+      const { state, absoluteX, absoluteY } = e.nativeEvent ?? {};
+      if (state === State.BEGAN) {
+        lastAbs.current = { x: absoluteX, y: absoluteY };
         beginResize(shapeId, corner);
       }
-      if (st === State.END || st === State.CANCELLED || st === State.FAILED) {
+      if (
+        state === State.END ||
+        state === State.CANCELLED ||
+        state === State.FAILED
+      ) {
+        lastAbs.current = null;
         endResize();
       }
     },
@@ -680,19 +701,35 @@ function ResizeHandle({
 
   const onPan = useCallback(
     (e: any) => {
-      const { translationX, translationY } = e.nativeEvent ?? {};
-      if (!Number.isFinite(translationX) || !Number.isFinite(translationY))
+      const { absoluteX, absoluteY, state } = e.nativeEvent ?? {};
+      if (!Number.isFinite(absoluteX) || !Number.isFinite(absoluteY)) return;
+      if (!lastAbs.current) {
+        lastAbs.current = { x: absoluteX, y: absoluteY };
         return;
-      const dxInc = translationX - last.current.x;
-      const dyInc = translationY - last.current.y;
-      last.current = { x: translationX, y: translationY };
-      resizeBy(dxInc / camScale, dyInc / camScale); // screen → world
+      }
+
+      const dxIncScreen = absoluteX - lastAbs.current.x;
+      const dyIncScreen = absoluteY - lastAbs.current.y;
+      lastAbs.current = { x: absoluteX, y: absoluteY };
+
+      if (dxIncScreen !== 0 || dyIncScreen !== 0) {
+        resizeBy(dxIncScreen / camScale, dyIncScreen / camScale); // screen → world
+      }
+
+      if (
+        state === State.END ||
+        state === State.CANCELLED ||
+        state === State.FAILED
+      ) {
+        lastAbs.current = null;
+        endResize();
+      }
     },
-    [camScale, resizeBy]
+    [camScale, resizeBy, endResize]
   );
 
-  const SIZE = 16; // visual size
-  const HIT = 28; // touch target
+  const SIZE = 16;
+  const HIT = 28;
 
   return (
     <PanGestureHandler
@@ -703,6 +740,8 @@ function ResizeHandle({
       maxPointers={1}
       activeOffsetX={[-3, 3]}
       activeOffsetY={[-3, 3]}
+      shouldCancelWhenOutside={false}
+      hitSlop={12}
     >
       <View
         style={{
@@ -759,7 +798,8 @@ function ShapeOverlay(props: {
     ref: React.RefObject<TapGestureHandler>
   ) => void;
   unregisterShapeDoubleTapRef: (id: string) => void;
-  handleWaitFor: React.RefObject<any>[]; // <-- NEW
+  handleWaitFor: React.RefObject<any>[];
+  isResizing: boolean;
 }) {
   const {
     id,
@@ -780,6 +820,7 @@ function ShapeOverlay(props: {
     registerShapeDoubleTapRef,
     unregisterShapeDoubleTapRef,
     handleWaitFor,
+    isResizing,
   } = props;
 
   const shapePanRef = useRef<PanGestureHandler>(null);
@@ -822,11 +863,9 @@ function ShapeOverlay(props: {
       const { translationX, translationY } = e.nativeEvent ?? {};
       if (!Number.isFinite(translationX) || !Number.isFinite(translationY))
         return;
-
       const dxInc = translationX - last.current.x;
       const dyInc = translationY - last.current.y;
       last.current = { x: translationX, y: translationY };
-
       if (!didDrag.current) {
         if (
           Math.abs(translationX) > TAP_SLOP ||
@@ -856,6 +895,7 @@ function ShapeOverlay(props: {
       maxDelayMs={300}
       onActivated={onDoubleTapActivated}
       waitFor={shapePanRef}
+      enabled={!isResizing}
     >
       <View style={[stylesShape.hit, { left, top, width, height }]}>
         <TapGestureHandler
@@ -863,6 +903,7 @@ function ShapeOverlay(props: {
           waitFor={[shapeDoubleTapRef, shapePanRef, ...handleWaitFor]}
           maxDist={TAP_SLOP}
           onActivated={onSingleTapActivated}
+          enabled={!isResizing}
         >
           <View style={StyleSheet.absoluteFill}>
             <PanGestureHandler
@@ -875,6 +916,7 @@ function ShapeOverlay(props: {
               waitFor={handleWaitFor}
               activeOffsetX={[-3, 3]}
               activeOffsetY={[-3, 3]}
+              enabled={!isResizing}
             >
               <View style={StyleSheet.absoluteFill} />
             </PanGestureHandler>
@@ -887,8 +929,6 @@ function ShapeOverlay(props: {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-
-  // Toolbar bottom-center
   toolbarWrap: {
     position: "absolute",
     bottom: 24,
@@ -920,8 +960,6 @@ const styles = StyleSheet.create({
   },
   btnPressed: { opacity: 0.7 },
   btnText: { color: "#111827", fontWeight: "600" },
-
-  // Editor overlay
   editorWrap: {
     position: "absolute",
     backgroundColor: "rgba(255,255,255,0.95)",
@@ -931,13 +969,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 6,
   },
-  editorInput: {
-    minHeight: 24,
-    fontSize: 16,
-    color: "#111827",
-  },
+  editorInput: { minHeight: 24, fontSize: 16, color: "#111827" },
 });
-
 const stylesShape = StyleSheet.create({
   hit: { position: "absolute", backgroundColor: "transparent" },
 });

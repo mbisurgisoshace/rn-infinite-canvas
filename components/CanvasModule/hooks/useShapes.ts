@@ -65,20 +65,20 @@ export function useShapes() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
-  // --- Resize session state (ephemeral) ---
-  const resizingRef = useRef<{
-    id: string | null;
-    corner: Corner | null;
-    start: { x: number; y: number; w: number; h: number } | null;
-  }>({ id: null, corner: null, start: null });
+  // Resize session
+  const resizingRef = useRef<{ id: string | null; corner: Corner | null }>({
+    id: null,
+    corner: null,
+  });
+  const [isResizing, setIsResizing] = useState(false);
 
   const MIN_W = 20;
   const MIN_H = 20;
 
-  // --- Selection ---
+  // Selection
   const select = useCallback((id: string | null) => setSelectedId(id), []);
 
-  // --- Drag move ---
+  // Drag move (incremental world deltas)
   const beginDrag = useCallback((id: string) => setDraggingId(id), []);
   const dragBy = useCallback(
     (dx: number, dy: number) => {
@@ -93,7 +93,7 @@ export function useShapes() {
   );
   const endDrag = useCallback(() => setDraggingId(null), []);
 
-  // --- Add shapes ---
+  // Add shapes
   const addRect = useCallback((partial: Partial<RectShape> = {}) => {
     const id = partial.id ?? `rect_${Math.random().toString(36).slice(2, 9)}`;
     const s: RectShape = {
@@ -153,54 +153,62 @@ export function useShapes() {
   }, []);
 
   // --- Resize API ---
-  const beginResize = useCallback(
-    (id: string, corner: Corner) => {
-      const s = shapes.find((sh) => sh.id === id);
-      if (!s) return;
-      resizingRef.current = {
-        id,
-        corner,
-        start: { x: s.x, y: s.y, w: s.w, h: s.h },
-      };
-    },
-    [shapes]
-  );
+  const beginResize = useCallback((id: string, corner: Corner) => {
+    resizingRef.current = { id, corner };
+    setIsResizing(true);
+  }, []);
 
+  /**
+   * Apply INCREMENTAL world deltas to the CURRENT shape state, preserving opposite edges.
+   * This avoids drift/jumpiness when the handle's view repositions during the gesture.
+   */
   const resizeBy = useCallback((dx: number, dy: number) => {
     const sess = resizingRef.current;
-    if (!sess.id || !sess.corner || !sess.start) return;
-
-    const { start, corner, id } = sess;
-    let { x, y, w, h } = start;
-
-    if (corner === "se") {
-      w = Math.max(MIN_W, w + dx);
-      h = Math.max(MIN_H, h + dy);
-    }
-    if (corner === "sw") {
-      x = x + dx;
-      w = Math.max(MIN_W, w - dx);
-      h = Math.max(MIN_H, h + dy);
-    }
-    if (corner === "ne") {
-      y = y + dy;
-      h = Math.max(MIN_H, h - dy);
-      w = Math.max(MIN_W, w + dx);
-    }
-    if (corner === "nw") {
-      x = x + dx;
-      y = y + dy;
-      w = Math.max(MIN_W, w - dx);
-      h = Math.max(MIN_H, h - dy);
-    }
+    if (!sess.id || !sess.corner) return;
 
     setShapes((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, x, y, w, h } : s))
+      prev.map((s) => {
+        if (s.id !== sess.id) return s;
+
+        let { x, y, w, h } = s;
+
+        if (sess.corner === "se") {
+          const newW = Math.max(MIN_W, w + dx);
+          const newH = Math.max(MIN_H, h + dy);
+          return { ...s, w: newW, h: newH };
+        }
+
+        if (sess.corner === "sw") {
+          const right = x + w;
+          const newW = Math.max(MIN_W, w - dx);
+          const newX = right - newW;
+          const newH = Math.max(MIN_H, h + dy);
+          return { ...s, x: newX, w: newW, h: newH };
+        }
+
+        if (sess.corner === "ne") {
+          const bottom = y + h;
+          const newW = Math.max(MIN_W, w + dx);
+          const newH = Math.max(MIN_H, h - dy);
+          const newY = bottom - newH;
+          return { ...s, y: newY, w: newW, h: newH };
+        }
+
+        // "nw"
+        const right = x + w;
+        const bottom = y + h;
+        const newW = Math.max(MIN_W, w - dx);
+        const newH = Math.max(MIN_H, h - dy);
+        const newX = right - newW;
+        const newY = bottom - newH;
+        return { ...s, x: newX, y: newY, w: newW, h: newH };
+      })
     );
   }, []);
 
   const endResize = useCallback(() => {
-    resizingRef.current = { id: null, corner: null, start: null };
+    resizingRef.current = { id: null, corner: null };
+    setIsResizing(false);
   }, []);
 
   return {
@@ -217,5 +225,6 @@ export function useShapes() {
     beginResize,
     resizeBy,
     endResize,
+    isResizing,
   };
 }
