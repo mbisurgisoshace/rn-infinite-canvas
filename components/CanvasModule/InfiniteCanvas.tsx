@@ -63,14 +63,30 @@ export default function InfiniteCanvas({
     isResizing,
   } = useShapes();
 
-  // Inline text editing (inline TextInput inside each shape)
+  // Inline text editing
   const [editingId, setEditingId] = useState<string | null>(null);
   const inputRef = useRef<TextInput>(null);
+
+  // NEW: mode toggle (pan vs marquee select)
+  const [selectMode, setSelectMode] = useState(false);
+
+  // NEW: multi-select (visual for now)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // NEW: marquee selection state (screen-space)
+  const [marquee, setMarquee] = useState<{
+    active: boolean;
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  }>({ active: false, x0: 0, y0: 0, x1: 0, y1: 0 });
 
   // Canvas gesture refs
   const canvasPanRef = useRef<PanGestureHandler>(null);
   const canvasPinchRef = useRef<PinchGestureHandler>(null);
   const bgTapRef = useRef<TapGestureHandler>(null);
+  const bgMarqueePanRef = useRef<PanGestureHandler>(null); // 1-finger drag when selectMode
 
   // Shape handler refs
   const shapePanRefs = useRef<Map<string, React.RefObject<PanGestureHandler>>>(
@@ -85,18 +101,17 @@ export default function InfiniteCanvas({
 
   // If the selected shape changes while resizing, end the resize session.
   useEffect(() => {
-    endResize(); // harmless if not resizing
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId]);
+    endResize();
+  }, [selectedId]); // harmless if not resizing
 
-  // Safety: on unmount, end any active resize.
-  useEffect(() => {
-    return () => {
+  useEffect(
+    () => () => {
       endResize();
-    };
-  }, [endResize]);
+    },
+    [endResize]
+  ); // on unmount
 
-  // Resize handle pan refs
+  // Resize handle refs
   const handlePanRefs = useRef<Map<string, React.RefObject<PanGestureHandler>>>(
     new Map()
   );
@@ -192,81 +207,23 @@ export default function InfiniteCanvas({
     setCam((c) => ({ ...c, scale: clamped }));
   }, []);
 
-  // Background tap → deselect / end editing
+  // Background tap → deselect / end edit / clear multi
   const onBackgroundTap = useCallback(
     (e: any) => {
       if (e.nativeEvent.state === State.END) {
         endResize();
         select(null);
         setEditingId(null);
+        if (selectedIds.size) setSelectedIds(new Set());
       }
     },
-    [select, endResize]
+    [select, endResize, selectedIds.size]
   );
 
   const onLayout = useCallback((e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
     if (width && height) setSize({ w: width, h: height });
   }, []);
-
-  // Grid (screen space)
-  const gridViews = useMemo(() => {
-    const nodes: JSX.Element[] = [];
-    if (size.w <= 0 || size.h <= 0 || gridSize <= 0) return nodes;
-    const step = gridSize * cam.scale;
-    if (!(step > 0.001) || !isFinite(step)) return nodes;
-    const startX = ((-cam.tx % step) + step) % step;
-    const startY = ((-cam.ty % step) + step) % step;
-    const countX = Math.ceil((size.w - startX) / step) + 1;
-    const countY = Math.ceil((size.h - startY) / step) + 1;
-    for (let i = -1; i <= countX; i++) {
-      const x = startX + i * step;
-      const idx = Math.round((x - cam.tx) / step);
-      const major = majorEvery > 0 && idx % majorEvery === 0;
-      nodes.push(
-        <View
-          key={`vx-${i}`}
-          style={{
-            position: "absolute",
-            left: Math.round(x),
-            top: 0,
-            width: 1,
-            height: size.h,
-            backgroundColor: major ? majorColor : minorColor,
-          }}
-        />
-      );
-    }
-    for (let j = -1; j <= countY; j++) {
-      const y = startY + j * step;
-      const idx = Math.round((y - cam.ty) / step);
-      const major = majorEvery > 0 && idx % majorEvery === 0;
-      nodes.push(
-        <View
-          key={`hy-${j}`}
-          style={{
-            position: "absolute",
-            left: 0,
-            top: Math.round(y),
-            height: 1,
-            width: size.w,
-            backgroundColor: major ? majorColor : minorColor,
-          }}
-        />
-      );
-    }
-    return nodes;
-  }, [
-    size.w,
-    size.h,
-    gridSize,
-    majorEvery,
-    cam.scale,
-    cam.tx,
-    cam.ty,
-    minorColor,
-    majorColor,
-  ]);
 
   // Toolbar actions
   const handleAddRect = useCallback(() => {
@@ -279,6 +236,7 @@ export default function InfiniteCanvas({
       stroke: "#2563EB",
     });
     select(id);
+    setSelectedIds(new Set());
   }, [addRect, select]);
   const handleAddEllipse = useCallback(() => {
     const id = addEllipse({
@@ -290,6 +248,7 @@ export default function InfiniteCanvas({
       stroke: "#F59E0B",
     });
     select(id);
+    setSelectedIds(new Set());
   }, [addEllipse, select]);
   const handleAddText = useCallback(() => {
     const id = addText({
@@ -302,25 +261,92 @@ export default function InfiniteCanvas({
       color: "#111827",
     });
     select(id);
+    setSelectedIds(new Set());
   }, [addText, select]);
 
-  // Helpers
+  // Text editing
   const beginEditing = useCallback((id: string) => {
     setEditingId(id);
-    // focus a tick later
     setTimeout(() => inputRef.current?.focus(), 0);
   }, []);
-
   const fontSizeFor = useCallback(
     (s: { fontSize?: number }) => (s.fontSize ?? 16) * cam.scale,
     [cam.scale]
   );
+
+  // ---- Marquee with one-finger drag ONLY when selectMode === true
+  const onBgMarqueePanState = useCallback(
+    (e: any) => {
+      const { state, absoluteX, absoluteY } = e.nativeEvent ?? {};
+      if (!selectMode) return;
+
+      if (state === State.BEGAN) {
+        // start marquee
+        setEditingId(null);
+        endResize();
+        select(null);
+        setSelectedIds(new Set());
+        setMarquee({
+          active: true,
+          x0: absoluteX,
+          y0: absoluteY,
+          x1: absoluteX,
+          y1: absoluteY,
+        });
+      } else if (
+        state === State.END ||
+        state === State.CANCELLED ||
+        state === State.FAILED
+      ) {
+        // finish and compute selection
+        setMarquee((m) => {
+          if (!m.active) return m;
+          const xMin = Math.min(m.x0, m.x1);
+          const yMin = Math.min(m.y0, m.y1);
+          const xMax = Math.max(m.x0, m.x1);
+          const yMax = Math.max(m.y0, m.y1);
+
+          const inside = new Set<string>();
+          for (const sh of shapes) {
+            const sx = sh.x * cam.scale + cam.tx;
+            const sy = sh.y * cam.scale + cam.ty;
+            const sw = sh.w * cam.scale;
+            const shh = sh.h * cam.scale;
+            const sRight = sx + sw;
+            const sBottom = sy + shh;
+            const fullyInside =
+              sx >= xMin && sRight <= xMax && sy >= yMin && sBottom <= yMax;
+            if (fullyInside) inside.add(sh.id);
+          }
+          setSelectedIds(inside);
+          return { active: false, x0: 0, y0: 0, x1: 0, y1: 0 };
+        });
+      }
+    },
+    [selectMode, shapes, cam.scale, cam.tx, cam.ty, endResize, select]
+  );
+
+  const onBgMarqueePanEvent = useCallback(
+    (e: any) => {
+      if (!selectMode) return;
+      const { absoluteX, absoluteY } = e.nativeEvent ?? {};
+      if (!Number.isFinite(absoluteX) || !Number.isFinite(absoluteY)) return;
+      setMarquee((m) =>
+        m.active ? { ...m, x1: absoluteX, y1: absoluteY } : m
+      );
+    },
+    [selectMode]
+  );
+
+  // Disable canvas one-finger pan while selecting; keep pinch in both modes
+  const canvasPanEnabled = !isResizing && !selectMode && !marquee.active;
 
   return (
     <PinchGestureHandler
       ref={canvasPinchRef}
       onGestureEvent={onCanvasPinchEvent}
       onHandlerStateChange={onCanvasPinchState}
+      enabled={!isResizing}
     >
       <View style={styles.flex}>
         <PanGestureHandler
@@ -330,178 +356,194 @@ export default function InfiniteCanvas({
           minPointers={1}
           maxPointers={2}
           waitFor={handleWaitFor}
-          enabled={!isResizing} // disable canvas pan while resizing
+          enabled={canvasPanEnabled}
         >
-          <TapGestureHandler
-            ref={bgTapRef}
-            onHandlerStateChange={onBackgroundTap}
-            maxDist={TAP_SLOP}
-            simultaneousHandlers={[canvasPanRef, canvasPinchRef]}
-            waitFor={allInteractiveRefs}
+          {/* When selectMode is ON, this 1-finger PAN draws the marquee */}
+          <PanGestureHandler
+            ref={bgMarqueePanRef}
+            onHandlerStateChange={onBgMarqueePanState}
+            onGestureEvent={onBgMarqueePanEvent}
+            minPointers={1}
+            maxPointers={1}
+            enabled={selectMode && !isResizing}
           >
-            <View
-              style={[styles.flex, { backgroundColor }]}
-              onLayout={onLayout}
+            <TapGestureHandler
+              ref={bgTapRef}
+              onHandlerStateChange={onBackgroundTap}
+              maxDist={TAP_SLOP}
+              simultaneousHandlers={[
+                canvasPanRef,
+                canvasPinchRef,
+                bgMarqueePanRef,
+              ]}
+              waitFor={allInteractiveRefs}
             >
-              {/* GRID */}
-              {/* <View style={StyleSheet.absoluteFill}>{gridViews}</View> */}
+              <View
+                style={[styles.flex, { backgroundColor }]}
+                onLayout={onLayout}
+              >
+                {/* SHAPES (with inline TextInput) */}
+                {shapes.map((s) => {
+                  const sx = s.x * cam.scale + cam.tx;
+                  const sy = s.y * cam.scale + cam.ty;
+                  const sw = s.w * cam.scale;
+                  const sh = s.h * cam.scale;
+                  const isThisEditing = editingId === s.id;
 
-              {/* SHAPES */}
-              {shapes.map((s) => {
-                const sx = s.x * cam.scale + cam.tx;
-                const sy = s.y * cam.scale + cam.ty;
-                const sw = s.w * cam.scale;
-                const sh = s.h * cam.scale;
-                const isThisEditing = editingId === s.id;
+                  if (s.kind === "rect") {
+                    const fs = fontSizeFor(s);
+                    return (
+                      <View
+                        key={s.id}
+                        style={{
+                          position: "absolute",
+                          left: sx,
+                          top: sy,
+                          width: sw,
+                          height: sh,
+                          backgroundColor: s.fill ?? "#fff",
+                          borderColor: s.stroke ?? "#111",
+                          borderWidth: s.strokeWidth ?? 2,
+                          justifyContent: "flex-start",
+                          padding: 8,
+                          zIndex: isThisEditing ? 1000 : 0,
+                        }}
+                      >
+                        <TextInput
+                          ref={isThisEditing ? inputRef : undefined}
+                          value={s.text ?? ""}
+                          onChangeText={(t) => setShapeText(s.id, t)}
+                          editable={isThisEditing}
+                          autoFocus={isThisEditing}
+                          selectTextOnFocus
+                          blurOnSubmit
+                          onBlur={() => setEditingId(null)}
+                          onSubmitEditing={() => setEditingId(null)}
+                          underlineColorAndroid="transparent"
+                          selectionColor="#3B82F6"
+                          placeholder=""
+                          style={{
+                            fontSize: fs,
+                            color: s.color ?? "#111",
+                            padding: 0,
+                            margin: 0,
+                            backgroundColor: "transparent",
+                            width: "100%",
+                          }}
+                        />
+                      </View>
+                    );
+                  }
 
-                if (s.kind === "rect") {
-                  const fs = fontSizeFor(s);
+                  if (s.kind === "ellipse") {
+                    const fs = fontSizeFor(s);
+                    return (
+                      <View
+                        key={s.id}
+                        style={{
+                          position: "absolute",
+                          left: sx,
+                          top: sy,
+                          width: sw,
+                          height: sh,
+                          backgroundColor: s.fill ?? "#fff",
+                          borderColor: s.stroke ?? "#111",
+                          borderWidth: s.strokeWidth ?? 2,
+                          borderRadius: Math.min(sw, sh) / 2,
+                          justifyContent: "center",
+                          alignItems: "center",
+                          overflow: "hidden",
+                          zIndex: isThisEditing ? 1000 : 0,
+                        }}
+                      >
+                        <TextInput
+                          ref={isThisEditing ? inputRef : undefined}
+                          value={s.text ?? ""}
+                          onChangeText={(t) => setShapeText(s.id, t)}
+                          editable={isThisEditing}
+                          autoFocus={isThisEditing}
+                          selectTextOnFocus
+                          blurOnSubmit
+                          onBlur={() => setEditingId(null)}
+                          onSubmitEditing={() => setEditingId(null)}
+                          underlineColorAndroid="transparent"
+                          selectionColor="#3B82F6"
+                          placeholder=""
+                          style={{
+                            fontSize: fs,
+                            color: s.color ?? "#111",
+                            padding: 0,
+                            margin: 0,
+                            backgroundColor: "transparent",
+                            width: "100%",
+                            textAlign: "center",
+                          }}
+                        />
+                      </View>
+                    );
+                  }
+
+                  if (s.kind === "text") {
+                    const fs = (s.fontSize ?? 18) * cam.scale;
+                    return (
+                      <View
+                        key={s.id}
+                        style={{
+                          position: "absolute",
+                          left: sx,
+                          top: sy,
+                          width: sw,
+                          height: sh,
+                          justifyContent: "flex-start",
+                          zIndex: isThisEditing ? 1000 : 0,
+                        }}
+                      >
+                        <TextInput
+                          ref={isThisEditing ? inputRef : undefined}
+                          value={s.text ?? ""}
+                          onChangeText={(t) => setShapeText(s.id, t)}
+                          editable={isThisEditing}
+                          autoFocus={isThisEditing}
+                          selectTextOnFocus
+                          blurOnSubmit
+                          onBlur={() => setEditingId(null)}
+                          onSubmitEditing={() => setEditingId(null)}
+                          underlineColorAndroid="transparent"
+                          selectionColor="#3B82F6"
+                          placeholder=""
+                          style={{
+                            fontSize: fs,
+                            color: s.color ?? "#111",
+                            padding: 0,
+                            margin: 0,
+                            backgroundColor: "transparent",
+                            width: "100%",
+                            height: "100%",
+                          }}
+                        />
+                      </View>
+                    );
+                  }
+                  return null;
+                })}
+
+                {/* SELECTION OUTLINES (single + multi). Hide when editing that shape */}
+                {shapes.map((s) => {
+                  const isSingle = s.id === selectedId && editingId !== s.id;
+                  const isMulti =
+                    selectedIds.has(s.id) &&
+                    s.id !== selectedId &&
+                    editingId !== s.id;
+                  if (!isSingle && !isMulti) return null;
+
+                  const sx = s.x * cam.scale + cam.tx;
+                  const sy = s.y * cam.scale + cam.ty;
+                  const sw = s.w * cam.scale;
+                  const sh = s.h * cam.scale;
+
                   return (
                     <View
-                      key={s.id}
-                      style={{
-                        position: "absolute",
-                        left: sx,
-                        top: sy,
-                        width: sw,
-                        height: sh,
-                        backgroundColor: s.fill ?? "#fff",
-                        borderColor: s.stroke ?? "#111",
-                        borderWidth: s.strokeWidth ?? 2,
-                        justifyContent: "flex-start",
-                        padding: 8,
-                        zIndex: isThisEditing ? 1000 : 0,
-                      }}
-                    >
-                      <TextInput
-                        ref={isThisEditing ? inputRef : undefined}
-                        value={s.text ?? ""}
-                        onChangeText={(t) => setShapeText(s.id, t)}
-                        editable={isThisEditing}
-                        autoFocus={isThisEditing}
-                        selectTextOnFocus
-                        blurOnSubmit
-                        onBlur={() => setEditingId(null)}
-                        onSubmitEditing={() => setEditingId(null)}
-                        underlineColorAndroid="transparent"
-                        selectionColor="#3B82F6"
-                        placeholder=""
-                        style={{
-                          fontSize: fs,
-                          color: s.color ?? "#111",
-                          padding: 0,
-                          margin: 0,
-                          backgroundColor: "transparent",
-                          width: "100%",
-                        }}
-                      />
-                    </View>
-                  );
-                }
-
-                if (s.kind === "ellipse") {
-                  const fs = fontSizeFor(s);
-                  return (
-                    <View
-                      key={s.id}
-                      style={{
-                        position: "absolute",
-                        left: sx,
-                        top: sy,
-                        width: sw,
-                        height: sh,
-                        backgroundColor: s.fill ?? "#fff",
-                        borderColor: s.stroke ?? "#111",
-                        borderWidth: s.strokeWidth ?? 2,
-                        borderRadius: Math.min(sw, sh) / 2,
-                        justifyContent: "center",
-                        alignItems: "center",
-                        overflow: "hidden",
-                        zIndex: isThisEditing ? 1000 : 0,
-                      }}
-                    >
-                      <TextInput
-                        ref={isThisEditing ? inputRef : undefined}
-                        value={s.text ?? ""}
-                        onChangeText={(t) => setShapeText(s.id, t)}
-                        editable={isThisEditing}
-                        autoFocus={isThisEditing}
-                        selectTextOnFocus
-                        blurOnSubmit
-                        onBlur={() => setEditingId(null)}
-                        onSubmitEditing={() => setEditingId(null)}
-                        underlineColorAndroid="transparent"
-                        selectionColor="#3B82F6"
-                        placeholder=""
-                        style={{
-                          fontSize: fs,
-                          color: s.color ?? "#111",
-                          padding: 0,
-                          margin: 0,
-                          backgroundColor: "transparent",
-                          width: "100%",
-                          textAlign: "center",
-                        }}
-                      />
-                    </View>
-                  );
-                }
-
-                if (s.kind === "text") {
-                  const fs = (s.fontSize ?? 18) * cam.scale;
-                  return (
-                    <View
-                      key={s.id}
-                      style={{
-                        position: "absolute",
-                        left: sx,
-                        top: sy,
-                        width: sw,
-                        height: sh,
-                        justifyContent: "flex-start",
-                        zIndex: isThisEditing ? 1000 : 0,
-                      }}
-                    >
-                      <TextInput
-                        ref={isThisEditing ? inputRef : undefined}
-                        value={s.text ?? ""}
-                        onChangeText={(t) => setShapeText(s.id, t)}
-                        editable={isThisEditing}
-                        autoFocus={isThisEditing}
-                        selectTextOnFocus
-                        blurOnSubmit
-                        onBlur={() => setEditingId(null)}
-                        onSubmitEditing={() => setEditingId(null)}
-                        underlineColorAndroid="transparent"
-                        selectionColor="#3B82F6"
-                        placeholder=""
-                        style={{
-                          fontSize: fs,
-                          color: s.color ?? "#111",
-                          padding: 0,
-                          margin: 0,
-                          backgroundColor: "transparent",
-                          width: "100%",
-                          height: "100%",
-                        }}
-                      />
-                    </View>
-                  );
-                }
-                return null;
-              })}
-
-              {/* SELECTION + HANDLES (hide if that shape is being edited) */}
-              {shapes.map((s) => {
-                if (s.id !== selectedId || editingId === s.id) return null;
-                const sx = s.x * cam.scale + cam.tx;
-                const sy = s.y * cam.scale + cam.ty;
-                const sw = s.w * cam.scale;
-                const sh = s.h * cam.scale;
-
-                return (
-                  <React.Fragment key={`sel-${s.id}`}>
-                    <View
+                      key={`sel-${s.id}`}
                       pointerEvents="none"
                       style={{
                         position: "absolute",
@@ -513,111 +555,154 @@ export default function InfiniteCanvas({
                         borderWidth: 2,
                       }}
                     />
-                    <ResizeHandle
-                      cx={sx}
-                      cy={sy}
-                      corner="nw"
-                      camScale={cam.scale}
-                      shapeId={s.id}
-                      beginResize={beginResize}
-                      resizeBy={resizeBy}
-                      endResize={endResize}
-                      registerHandleRef={registerHandleRef}
-                      unregisterHandleRef={unregisterHandleRef}
-                    />
-                    <ResizeHandle
-                      cx={sx + sw}
-                      cy={sy}
-                      corner="ne"
-                      camScale={cam.scale}
-                      shapeId={s.id}
-                      beginResize={beginResize}
-                      resizeBy={resizeBy}
-                      endResize={endResize}
-                      registerHandleRef={registerHandleRef}
-                      unregisterHandleRef={unregisterHandleRef}
-                    />
-                    <ResizeHandle
-                      cx={sx + sw}
-                      cy={sy + sh}
-                      corner="se"
-                      camScale={cam.scale}
-                      shapeId={s.id}
-                      beginResize={beginResize}
-                      resizeBy={resizeBy}
-                      endResize={endResize}
-                      registerHandleRef={registerHandleRef}
-                      unregisterHandleRef={unregisterHandleRef}
-                    />
-                    <ResizeHandle
-                      cx={sx}
-                      cy={sy + sh}
-                      corner="sw"
-                      camScale={cam.scale}
-                      shapeId={s.id}
-                      beginResize={beginResize}
-                      resizeBy={resizeBy}
-                      endResize={endResize}
-                      registerHandleRef={registerHandleRef}
-                      unregisterHandleRef={unregisterHandleRef}
-                    />
-                  </React.Fragment>
-                );
-              })}
+                  );
+                })}
 
-              {/* Interaction overlays (tap/select + long-press-to-edit for ALL shapes) */}
-              {shapes.map((s) => {
-                const sx = s.x * cam.scale + cam.tx;
-                const sy = s.y * cam.scale + cam.ty;
-                const sw = s.w * cam.scale;
-                const sh = s.h * cam.scale;
-                const isEditingThis = editingId === s.id;
+                {/* Handles for single selection only (unchanged) */}
+                {shapes.map((s) => {
+                  if (s.id !== selectedId || editingId === s.id) return null;
+                  const sx = s.x * cam.scale + cam.tx;
+                  const sy = s.y * cam.scale + cam.ty;
+                  const sw = s.w * cam.scale;
+                  const sh = s.h * cam.scale;
 
-                return (
-                  <ShapeOverlay
-                    key={`ovl-${s.id}`}
-                    id={s.id}
-                    left={sx}
-                    top={sy}
-                    width={sw}
-                    height={sh}
-                    select={select}
-                    beginDrag={beginDrag}
-                    dragByWorld={dragBy}
-                    endDrag={endDrag}
-                    camScale={cam.scale}
-                    onEdit={() => {
-                      // long-press to edit on Rect, Ellipse, Text
-                      select(s.id);
-                      beginEditing(s.id);
-                    }}
-                    canEditText={true} // ⬅️ enable inline edit for all shapes
-                    registerShapePanRef={(id, ref) =>
-                      shapePanRefs.current.set(id, ref)
-                    }
-                    unregisterShapePanRef={(id) =>
-                      shapePanRefs.current.delete(id)
-                    }
-                    registerShapeTapRef={(id, ref) =>
-                      shapeTapRefs.current.set(id, ref)
-                    }
-                    unregisterShapeTapRef={(id) =>
-                      shapeTapRefs.current.delete(id)
-                    }
-                    registerShapeDoubleTapRef={(id, ref) =>
-                      shapeDoubleTapRefs.current.set(id, ref)
-                    }
-                    unregisterShapeDoubleTapRef={(id) =>
-                      shapeDoubleTapRefs.current.delete(id)
-                    }
-                    handleWaitFor={handleWaitFor}
-                    isResizing={isResizing}
-                    isEditingThis={isEditingThis}
-                  />
-                );
-              })}
-            </View>
-          </TapGestureHandler>
+                  return (
+                    <React.Fragment key={`handles-${s.id}`}>
+                      <ResizeHandle
+                        cx={sx}
+                        cy={sy}
+                        corner="nw"
+                        camScale={cam.scale}
+                        shapeId={s.id}
+                        beginResize={beginResize}
+                        resizeBy={resizeBy}
+                        endResize={endResize}
+                        registerHandleRef={registerHandleRef}
+                        unregisterHandleRef={unregisterHandleRef}
+                      />
+                      <ResizeHandle
+                        cx={sx + sw}
+                        cy={sy}
+                        corner="ne"
+                        camScale={cam.scale}
+                        shapeId={s.id}
+                        beginResize={beginResize}
+                        resizeBy={resizeBy}
+                        endResize={endResize}
+                        registerHandleRef={registerHandleRef}
+                        unregisterHandleRef={unregisterHandleRef}
+                      />
+                      <ResizeHandle
+                        cx={sx + sw}
+                        cy={sy + sh}
+                        corner="se"
+                        camScale={cam.scale}
+                        shapeId={s.id}
+                        beginResize={beginResize}
+                        resizeBy={resizeBy}
+                        endResize={endResize}
+                        registerHandleRef={registerHandleRef}
+                        unregisterHandleRef={unregisterHandleRef}
+                      />
+                      <ResizeHandle
+                        cx={sx}
+                        cy={sy + sh}
+                        corner="sw"
+                        camScale={cam.scale}
+                        shapeId={s.id}
+                        beginResize={beginResize}
+                        resizeBy={resizeBy}
+                        endResize={endResize}
+                        registerHandleRef={registerHandleRef}
+                        unregisterHandleRef={unregisterHandleRef}
+                      />
+                    </React.Fragment>
+                  );
+                })}
+
+                {/* Interaction overlays (tap/select + drag + long-press to edit for ALL shapes) */}
+                {shapes.map((s) => {
+                  const sx = s.x * cam.scale + cam.tx;
+                  const sy = s.y * cam.scale + cam.ty;
+                  const sw = s.w * cam.scale;
+                  const sh = s.h * cam.scale;
+                  const isEditingThis = editingId === s.id;
+
+                  return (
+                    <ShapeOverlay
+                      key={`ovl-${s.id}`}
+                      id={s.id}
+                      left={sx}
+                      top={sy}
+                      width={sw}
+                      height={sh}
+                      select={(id) => {
+                        setSelectedIds(new Set());
+                        select(id);
+                      }}
+                      beginDrag={beginDrag}
+                      dragByWorld={dragBy}
+                      endDrag={endDrag}
+                      camScale={cam.scale}
+                      onEdit={() => {
+                        setSelectedIds(new Set());
+                        select(s.id);
+                        beginEditing(s.id);
+                      }}
+                      canEditText={true}
+                      registerShapePanRef={(id, ref) =>
+                        shapePanRefs.current.set(id, ref)
+                      }
+                      unregisterShapePanRef={(id) =>
+                        shapePanRefs.current.delete(id)
+                      }
+                      registerShapeTapRef={(id, ref) =>
+                        shapeTapRefs.current.set(id, ref)
+                      }
+                      unregisterShapeTapRef={(id) =>
+                        shapeTapRefs.current.delete(id)
+                      }
+                      registerShapeDoubleTapRef={(id, ref) =>
+                        shapeDoubleTapRefs.current.set(id, ref)
+                      }
+                      unregisterShapeDoubleTapRef={(id) =>
+                        shapeDoubleTapRefs.current.delete(id)
+                      }
+                      handleWaitFor={Array.from(handlePanRefs.current.values())}
+                      isResizing={isResizing}
+                      isEditingThis={isEditingThis}
+                    />
+                  );
+                })}
+
+                {/* Marquee rectangle overlay */}
+                {marquee.active && (
+                  <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+                    {(() => {
+                      const x = Math.min(marquee.x0, marquee.x1);
+                      const y = Math.min(marquee.y0, marquee.y1);
+                      const w = Math.abs(marquee.x1 - marquee.x0);
+                      const h = Math.abs(marquee.y1 - marquee.y0);
+                      return (
+                        <View
+                          style={{
+                            position: "absolute",
+                            left: x,
+                            top: y,
+                            width: w,
+                            height: h,
+                            borderWidth: 2,
+                            borderColor: "#3B82F6",
+                            backgroundColor: "rgba(59,130,246,0.12)",
+                          }}
+                        />
+                      );
+                    })()}
+                  </View>
+                )}
+              </View>
+            </TapGestureHandler>
+          </PanGestureHandler>
         </PanGestureHandler>
 
         {/* Toolbar */}
@@ -626,6 +711,24 @@ export default function InfiniteCanvas({
             <ToolbarButton label="Rect" onPress={handleAddRect} />
             <ToolbarButton label="Ellipse" onPress={handleAddEllipse} />
             <ToolbarButton label="Text" onPress={handleAddText} />
+            {/* Mode toggle */}
+            <Pressable
+              onPress={() => setSelectMode((m) => !m)}
+              style={({ pressed }) => [
+                styles.btn,
+                pressed && styles.btnPressed,
+                selectMode && {
+                  backgroundColor: "#DBEAFE",
+                  borderColor: "#93C5FD",
+                },
+              ]}
+            >
+              <RNText
+                style={[styles.btnText, selectMode && { color: "#1D4ED8" }]}
+              >
+                {selectMode ? "Selecting…" : "Select"}
+              </RNText>
+            </Pressable>
           </View>
         </View>
       </View>
@@ -713,15 +816,12 @@ function ResizeHandle({
         lastAbs.current = { x: absoluteX, y: absoluteY };
         return;
       }
-
       const dxIncScreen = absoluteX - lastAbs.current.x;
       const dyIncScreen = absoluteY - lastAbs.current.y;
       lastAbs.current = { x: absoluteX, y: absoluteY };
-
       if (dxIncScreen !== 0 || dyIncScreen !== 0) {
         resizeBy(dxIncScreen / camScale, dyIncScreen / camScale); // screen → world
       }
-
       if (
         state === State.END ||
         state === State.CANCELLED ||
@@ -789,7 +889,7 @@ function ShapeOverlay(props: {
   endDrag: () => void;
   camScale: number;
   onEdit: () => void; // enter inline edit
-  canEditText: boolean; // now true for all shapes
+  canEditText: boolean;
   registerShapePanRef: (
     id: string,
     ref: React.RefObject<PanGestureHandler>
@@ -840,19 +940,24 @@ function ShapeOverlay(props: {
   useEffect(() => {
     registerShapePanRef(id, shapePanRef);
     registerShapeTapRef(id, shapeTapRef);
-    // keep double-tap ref registration to preserve upstream structure (even if unused here)
-    registerShapeDoubleTapRef(id, { current: null } as any);
+    registerShapeDoubleTapRef(id, { current: null } as any); // keep structure
     return () => {
       unregisterShapePanRef(id);
       unregisterShapeTapRef(id);
       unregisterShapeDoubleTapRef(id);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [
+    id,
+    registerShapePanRef,
+    registerShapeTapRef,
+    registerShapeDoubleTapRef,
+    unregisterShapePanRef,
+    unregisterShapeTapRef,
+    unregisterShapeDoubleTapRef,
+  ]);
 
   const last = useRef({ x: 0, y: 0 });
   const didDrag = useRef(false);
-
   const onPanState = useCallback(
     (e: any) => {
       const st = e.nativeEvent.state;
@@ -881,11 +986,9 @@ function ShapeOverlay(props: {
         if (
           Math.abs(translationX) > TAP_SLOP ||
           Math.abs(translationY) > TAP_SLOP
-        ) {
+        )
           didDrag.current = true;
-        } else {
-          return;
-        }
+        else return;
       }
       dragByWorld(dxInc / camScale, dyInc / camScale); // screen → world
     },
@@ -899,9 +1002,9 @@ function ShapeOverlay(props: {
   return (
     <View
       style={[stylesShape.hit, { left, top, width, height }]}
-      pointerEvents={isEditingThis ? "none" : "auto"} // let TextInput below receive touches while editing this shape
+      pointerEvents={isEditingThis ? "none" : "auto"} // allow TextInput while editing
     >
-      {/* Long-press to edit (for all shapes) */}
+      {/* Long-press to edit (any shape) */}
       <LongPressGestureHandler
         ref={shapeLongPressRef}
         minDurationMs={280}
