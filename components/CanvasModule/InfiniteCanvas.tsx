@@ -15,6 +15,7 @@ import {
   View,
 } from "react-native";
 import {
+  LongPressGestureHandler,
   PanGestureHandler,
   PinchGestureHandler,
   State,
@@ -62,9 +63,8 @@ export default function InfiniteCanvas({
     isResizing,
   } = useShapes();
 
-  // Inline text editing
+  // Inline text editing (inline TextInput inside each shape)
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingValue, setEditingValue] = useState("");
   const inputRef = useRef<TextInput>(null);
 
   // Canvas gesture refs
@@ -192,7 +192,7 @@ export default function InfiniteCanvas({
     setCam((c) => ({ ...c, scale: clamped }));
   }, []);
 
-  // Background tap → deselect
+  // Background tap → deselect / end editing
   const onBackgroundTap = useCallback(
     (e: any) => {
       if (e.nativeEvent.state === State.END) {
@@ -305,35 +305,16 @@ export default function InfiniteCanvas({
   }, [addText, select]);
 
   // Helpers
-  const getScreenFrame = useCallback(
-    (id: string) => {
-      const s = shapes.find((sh) => sh.id === id);
-      if (!s) return null;
-      const sx = s.x * cam.scale + cam.tx;
-      const sy = s.y * cam.scale + cam.ty;
-      const sw = s.w * cam.scale;
-      const sh = s.h * cam.scale;
-      return { sx, sy, sw, sh, shape: s };
-    },
-    [shapes, cam.scale, cam.tx, cam.ty]
-  );
+  const beginEditing = useCallback((id: string) => {
+    setEditingId(id);
+    // focus a tick later
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }, []);
 
-  const beginEditing = useCallback(
-    (id: string) => {
-      const fr = getScreenFrame(id);
-      if (!fr) return;
-      const initial = fr.shape.text ?? "";
-      setEditingId(id);
-      setEditingValue(initial);
-      setTimeout(() => inputRef.current?.focus(), 0);
-    },
-    [getScreenFrame]
+  const fontSizeFor = useCallback(
+    (s: { fontSize?: number }) => (s.fontSize ?? 16) * cam.scale,
+    [cam.scale]
   );
-
-  const commitEditing = useCallback(() => {
-    if (editingId !== null) setShapeText(editingId, editingValue);
-    setEditingId(null);
-  }, [editingId, editingValue, setShapeText]);
 
   return (
     <PinchGestureHandler
@@ -371,8 +352,10 @@ export default function InfiniteCanvas({
                 const sy = s.y * cam.scale + cam.ty;
                 const sw = s.w * cam.scale;
                 const sh = s.h * cam.scale;
+                const isThisEditing = editingId === s.id;
 
                 if (s.kind === "rect") {
+                  const fs = fontSizeFor(s);
                   return (
                     <View
                       key={s.id}
@@ -386,23 +369,38 @@ export default function InfiniteCanvas({
                         borderColor: s.stroke ?? "#111",
                         borderWidth: s.strokeWidth ?? 2,
                         justifyContent: "flex-start",
+                        padding: 8,
+                        zIndex: isThisEditing ? 1000 : 0,
                       }}
                     >
-                      {!!s.text && (
-                        <RNText
-                          style={{
-                            margin: 8,
-                            fontSize: 16 * cam.scale,
-                            color: "#111",
-                          }}
-                        >
-                          {s.text}
-                        </RNText>
-                      )}
+                      <TextInput
+                        ref={isThisEditing ? inputRef : undefined}
+                        value={s.text ?? ""}
+                        onChangeText={(t) => setShapeText(s.id, t)}
+                        editable={isThisEditing}
+                        autoFocus={isThisEditing}
+                        selectTextOnFocus
+                        blurOnSubmit
+                        onBlur={() => setEditingId(null)}
+                        onSubmitEditing={() => setEditingId(null)}
+                        underlineColorAndroid="transparent"
+                        selectionColor="#3B82F6"
+                        placeholder=""
+                        style={{
+                          fontSize: fs,
+                          color: s.color ?? "#111",
+                          padding: 0,
+                          margin: 0,
+                          backgroundColor: "transparent",
+                          width: "100%",
+                        }}
+                      />
                     </View>
                   );
                 }
+
                 if (s.kind === "ellipse") {
+                  const fs = fontSizeFor(s);
                   return (
                     <View
                       key={s.id}
@@ -419,18 +417,36 @@ export default function InfiniteCanvas({
                         justifyContent: "center",
                         alignItems: "center",
                         overflow: "hidden",
+                        zIndex: isThisEditing ? 1000 : 0,
                       }}
                     >
-                      {!!s.text && (
-                        <RNText
-                          style={{ fontSize: 16 * cam.scale, color: "#111" }}
-                        >
-                          {s.text}
-                        </RNText>
-                      )}
+                      <TextInput
+                        ref={isThisEditing ? inputRef : undefined}
+                        value={s.text ?? ""}
+                        onChangeText={(t) => setShapeText(s.id, t)}
+                        editable={isThisEditing}
+                        autoFocus={isThisEditing}
+                        selectTextOnFocus
+                        blurOnSubmit
+                        onBlur={() => setEditingId(null)}
+                        onSubmitEditing={() => setEditingId(null)}
+                        underlineColorAndroid="transparent"
+                        selectionColor="#3B82F6"
+                        placeholder=""
+                        style={{
+                          fontSize: fs,
+                          color: s.color ?? "#111",
+                          padding: 0,
+                          margin: 0,
+                          backgroundColor: "transparent",
+                          width: "100%",
+                          textAlign: "center",
+                        }}
+                      />
                     </View>
                   );
                 }
+
                 if (s.kind === "text") {
                   const fs = (s.fontSize ?? 18) * cam.scale;
                   return (
@@ -443,22 +459,41 @@ export default function InfiniteCanvas({
                         width: sw,
                         height: sh,
                         justifyContent: "flex-start",
+                        zIndex: isThisEditing ? 1000 : 0,
                       }}
                     >
-                      <RNText
-                        style={{ fontSize: fs, color: s.color ?? "#111" }}
-                      >
-                        {s.text ?? ""}
-                      </RNText>
+                      <TextInput
+                        ref={isThisEditing ? inputRef : undefined}
+                        value={s.text ?? ""}
+                        onChangeText={(t) => setShapeText(s.id, t)}
+                        editable={isThisEditing}
+                        autoFocus={isThisEditing}
+                        selectTextOnFocus
+                        blurOnSubmit
+                        onBlur={() => setEditingId(null)}
+                        onSubmitEditing={() => setEditingId(null)}
+                        underlineColorAndroid="transparent"
+                        selectionColor="#3B82F6"
+                        placeholder=""
+                        style={{
+                          fontSize: fs,
+                          color: s.color ?? "#111",
+                          padding: 0,
+                          margin: 0,
+                          backgroundColor: "transparent",
+                          width: "100%",
+                          height: "100%",
+                        }}
+                      />
                     </View>
                   );
                 }
                 return null;
               })}
 
-              {/* SELECTION + HANDLES */}
+              {/* SELECTION + HANDLES (hide if that shape is being edited) */}
               {shapes.map((s) => {
-                if (s.id !== selectedId) return null;
+                if (s.id !== selectedId || editingId === s.id) return null;
                 const sx = s.x * cam.scale + cam.tx;
                 const sy = s.y * cam.scale + cam.ty;
                 const sw = s.w * cam.scale;
@@ -530,12 +565,13 @@ export default function InfiniteCanvas({
                 );
               })}
 
-              {/* Interaction overlays (tap/select + drag) */}
+              {/* Interaction overlays (tap/select + long-press-to-edit for ALL shapes) */}
               {shapes.map((s) => {
                 const sx = s.x * cam.scale + cam.tx;
                 const sy = s.y * cam.scale + cam.ty;
                 const sw = s.w * cam.scale;
                 const sh = s.h * cam.scale;
+                const isEditingThis = editingId === s.id;
 
                 return (
                   <ShapeOverlay
@@ -550,10 +586,12 @@ export default function InfiniteCanvas({
                     dragByWorld={dragBy}
                     endDrag={endDrag}
                     camScale={cam.scale}
-                    onDoubleTap={() => {
+                    onEdit={() => {
+                      // long-press to edit on Rect, Ellipse, Text
                       select(s.id);
                       beginEditing(s.id);
                     }}
+                    canEditText={true} // ⬅️ enable inline edit for all shapes
                     registerShapePanRef={(id, ref) =>
                       shapePanRefs.current.set(id, ref)
                     }
@@ -574,42 +612,10 @@ export default function InfiniteCanvas({
                     }
                     handleWaitFor={handleWaitFor}
                     isResizing={isResizing}
+                    isEditingThis={isEditingThis}
                   />
                 );
               })}
-
-              {/* TEXT EDITOR overlay */}
-              {editingId &&
-                (() => {
-                  const fr = getScreenFrame(editingId);
-                  if (!fr) return null;
-                  const { sx, sy, sw, sh } = fr;
-                  return (
-                    <View
-                      style={[
-                        styles.editorWrap,
-                        {
-                          left: sx + 2,
-                          top: sy + 2,
-                          width: Math.max(60, sw - 4),
-                        },
-                      ]}
-                    >
-                      <TextInput
-                        ref={inputRef}
-                        value={editingValue}
-                        onChangeText={setEditingValue}
-                        onBlur={commitEditing}
-                        onSubmitEditing={commitEditing}
-                        placeholder="Type…"
-                        style={styles.editorInput}
-                        multiline
-                        numberOfLines={Math.max(1, Math.round(sh / 20))}
-                        returnKeyType="done"
-                      />
-                    </View>
-                  );
-                })()}
             </View>
           </TapGestureHandler>
         </PanGestureHandler>
@@ -770,7 +776,7 @@ function ResizeHandle({
   );
 }
 
-/** One overlay per shape: tap (select), double-tap (edit), pan (drag). */
+/** One overlay per shape: tap (select), long-press (edit), pan (drag). */
 function ShapeOverlay(props: {
   id: string;
   left: number;
@@ -782,7 +788,8 @@ function ShapeOverlay(props: {
   dragByWorld: (dxWorld: number, dyWorld: number) => void;
   endDrag: () => void;
   camScale: number;
-  onDoubleTap: () => void;
+  onEdit: () => void; // enter inline edit
+  canEditText: boolean; // now true for all shapes
   registerShapePanRef: (
     id: string,
     ref: React.RefObject<PanGestureHandler>
@@ -800,6 +807,7 @@ function ShapeOverlay(props: {
   unregisterShapeDoubleTapRef: (id: string) => void;
   handleWaitFor: React.RefObject<any>[];
   isResizing: boolean;
+  isEditingThis: boolean;
 }) {
   const {
     id,
@@ -812,7 +820,8 @@ function ShapeOverlay(props: {
     dragByWorld,
     endDrag,
     camScale,
-    onDoubleTap,
+    onEdit,
+    canEditText,
     registerShapePanRef,
     unregisterShapePanRef,
     registerShapeTapRef,
@@ -821,16 +830,18 @@ function ShapeOverlay(props: {
     unregisterShapeDoubleTapRef,
     handleWaitFor,
     isResizing,
+    isEditingThis,
   } = props;
 
   const shapePanRef = useRef<PanGestureHandler>(null);
   const shapeTapRef = useRef<TapGestureHandler>(null);
-  const shapeDoubleTapRef = useRef<TapGestureHandler>(null);
+  const shapeLongPressRef = useRef<LongPressGestureHandler>(null);
 
   useEffect(() => {
     registerShapePanRef(id, shapePanRef);
     registerShapeTapRef(id, shapeTapRef);
-    registerShapeDoubleTapRef(id, shapeDoubleTapRef);
+    // keep double-tap ref registration to preserve upstream structure (even if unused here)
+    registerShapeDoubleTapRef(id, { current: null } as any);
     return () => {
       unregisterShapePanRef(id);
       unregisterShapeTapRef(id);
@@ -884,46 +895,53 @@ function ShapeOverlay(props: {
   const onSingleTapActivated = useCallback(() => {
     select(id);
   }, [id, select]);
-  const onDoubleTapActivated = useCallback(() => {
-    onDoubleTap();
-  }, [onDoubleTap]);
 
   return (
-    <TapGestureHandler
-      ref={shapeDoubleTapRef}
-      numberOfTaps={2}
-      maxDelayMs={300}
-      onActivated={onDoubleTapActivated}
-      waitFor={shapePanRef}
-      enabled={!isResizing}
+    <View
+      style={[stylesShape.hit, { left, top, width, height }]}
+      pointerEvents={isEditingThis ? "none" : "auto"} // let TextInput below receive touches while editing this shape
     >
-      <View style={[stylesShape.hit, { left, top, width, height }]}>
-        <TapGestureHandler
-          ref={shapeTapRef}
-          waitFor={[shapeDoubleTapRef, shapePanRef, ...handleWaitFor]}
-          maxDist={TAP_SLOP}
-          onActivated={onSingleTapActivated}
-          enabled={!isResizing}
-        >
-          <View style={StyleSheet.absoluteFill}>
-            <PanGestureHandler
-              ref={shapePanRef}
-              onHandlerStateChange={onPanState}
-              onGestureEvent={onPan}
-              minPointers={1}
-              maxPointers={1}
-              shouldCancelWhenOutside={false}
-              waitFor={handleWaitFor}
-              activeOffsetX={[-3, 3]}
-              activeOffsetY={[-3, 3]}
-              enabled={!isResizing}
-            >
-              <View style={StyleSheet.absoluteFill} />
-            </PanGestureHandler>
-          </View>
-        </TapGestureHandler>
-      </View>
-    </TapGestureHandler>
+      {/* Long-press to edit (for all shapes) */}
+      <LongPressGestureHandler
+        ref={shapeLongPressRef}
+        minDurationMs={280}
+        maxDist={12}
+        onActivated={() => {
+          if (canEditText) onEdit();
+        }}
+        simultaneousHandlers={[shapePanRef]}
+        enabled={!isResizing}
+      >
+        <View style={StyleSheet.absoluteFill}>
+          {/* Single tap to select (waits for pan & long-press) */}
+          <TapGestureHandler
+            ref={shapeTapRef}
+            waitFor={[shapePanRef, shapeLongPressRef, ...handleWaitFor]}
+            maxDist={TAP_SLOP}
+            onActivated={onSingleTapActivated}
+            enabled={!isResizing}
+          >
+            <View style={StyleSheet.absoluteFill}>
+              {/* Pan to drag */}
+              <PanGestureHandler
+                ref={shapePanRef}
+                onHandlerStateChange={onPanState}
+                onGestureEvent={onPan}
+                minPointers={1}
+                maxPointers={1}
+                shouldCancelWhenOutside={false}
+                waitFor={handleWaitFor}
+                activeOffsetX={[-3, 3]}
+                activeOffsetY={[-3, 3]}
+                enabled={!isResizing}
+              >
+                <View style={StyleSheet.absoluteFill} />
+              </PanGestureHandler>
+            </View>
+          </TapGestureHandler>
+        </View>
+      </LongPressGestureHandler>
+    </View>
   );
 }
 
@@ -960,16 +978,6 @@ const styles = StyleSheet.create({
   },
   btnPressed: { opacity: 0.7 },
   btnText: { color: "#111827", fontWeight: "600" },
-  editorWrap: {
-    position: "absolute",
-    backgroundColor: "rgba(255,255,255,0.95)",
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#CBD5E1",
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  editorInput: { minHeight: 24, fontSize: 16, color: "#111827" },
 });
 const stylesShape = StyleSheet.create({
   hit: { position: "absolute", backgroundColor: "transparent" },
